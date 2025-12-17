@@ -1,191 +1,279 @@
-import * as Speech from "expo-speech";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
-  ScrollView,
   Text,
+  TextInput,
+  TouchableOpacity,
   View,
+  Keyboard,
+  TouchableWithoutFeedback,
 } from "react-native";
-import { ChatBubble } from "../src/components/ChatBubble";
-import { ChatInput } from "../src/components/ChatInput";
-import { VoiceButton } from "../src/components/VoiceButton";
-import { useAudioRecorder } from "../src/hooks/useAudioRecorder";
-import { sendChatMessage, transcribeAudio } from "../src/services/api";
-import { Message } from "../src/types/chat";
+import { Ionicons } from "@expo/vector-icons";
 
-export default function ChatScreen() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const scrollViewRef = useRef<ScrollView>(null);
-  const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+const API_URL = "http://192.168.1.3:4000/chat";
 
-  // Generate unique ID
-  const generateId = () =>
-    `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+type Role = "user" | "assistant";
+type Msg = { id: string; role: Role; content: string };
 
-  // Scroll to bottom when new message arrives
+function TypingDots() {
+  const [dots, setDots] = useState(".");
+  useEffect(() => {
+    const t = setInterval(() => {
+      setDots((d) => (d.length >= 3 ? "." : d + "."));
+    }, 450);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <Text className="text-[15px] text-gray-800">DigiBuddy is typing{dots}</Text>
+  );
+}
+
+export default function Index() {
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+
+  const [messages, setMessages] = useState<Msg[]>([
+    {
+      id: "a1",
+      role: "assistant",
+      content: "Hello! How can I help you today?",
+    },
+    { id: "a2", role: "assistant", content: "I will explain step by step." },
+  ]);
+
+  const listRef = useRef<FlatList<Msg>>(null);
+
+  const payloadMessages = useMemo(
+    () => messages.map((m) => ({ role: m.role, content: m.content })),
+    [messages]
+  );
+
   const scrollToBottom = () => {
-    setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    requestAnimationFrame(() =>
+      listRef.current?.scrollToEnd({ animated: true })
+    );
   };
 
-  // Send message and get AI response
-  const handleSendMessage = async (content: string) => {
-    if (!content.trim() || isLoading) return;
+  // Add/remove typing item INSIDE the list (no floating absolute bubble)
+  const displayMessages = useMemo(() => {
+    if (!isTyping) return messages;
+    return [
+      ...messages,
+      { id: "typing", role: "assistant", content: "__TYPING__" } as Msg,
+    ];
+  }, [messages, isTyping]);
 
-    // Add user message
-    const userMessage: Message = {
-      id: generateId(),
+  const send = async () => {
+    const text = input.trim();
+    if (!text || isTyping) return;
+
+    const userMsg: Msg = {
+      id: String(Date.now()),
       role: "user",
-      content: content.trim(),
-      timestamp: new Date(),
+      content: text,
     };
-
-    setMessages((prev) => [...prev, userMessage]);
-    setIsLoading(true);
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setIsTyping(true);
     scrollToBottom();
 
     try {
-      // Prepare messages for API (only role and content)
-      const apiMessages = [...messages, userMessage].map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [...payloadMessages, { role: "user", content: text }],
+        }),
+      });
 
-      // Get AI response
-      const reply = await sendChatMessage(apiMessages);
+      const data = await res.json();
+      const replyText =
+        typeof data?.reply === "string" && data.reply.trim().length > 0
+          ? data.reply
+          : "Sorry, I could not reply.";
 
-      // Add AI message
-      const aiMessage: Message = {
-        id: generateId(),
-        role: "assistant",
-        content: reply,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, aiMessage]);
+      setMessages((prev) => [
+        ...prev,
+        { id: String(Date.now() + 1), role: "assistant", content: replyText },
+      ]);
       scrollToBottom();
-
-      // Speak the response
-      Speech.speak(reply, { language: "en", rate: 0.9 });
-    } catch (error) {
-      console.error("Error:", error);
-      // Add error message
+    } catch {
       setMessages((prev) => [
         ...prev,
         {
-          id: generateId(),
+          id: String(Date.now() + 2),
           role: "assistant",
-          content: "Sorry, I had trouble responding. Please try again.",
-          timestamp: new Date(),
+          content:
+            "Sorry — I couldn’t reach the server. Check API_URL and backend.",
         },
       ]);
+      scrollToBottom();
     } finally {
-      setIsLoading(false);
+      setIsTyping(false);
     }
   };
 
-  // Handle voice recording
-  const handleVoiceStart = () => {
-    Speech.stop(); // Stop any ongoing speech
-    startRecording();
-  };
+  const Bubble = ({ item }: { item: Msg }) => {
+    const isAssistant = item.role === "assistant";
 
-  const handleVoiceEnd = async () => {
-    const audioUri = await stopRecording();
+    return (
+      <View className="flex-row px-6 mb-4">
+        {isAssistant ? (
+          <View className="w-10 items-center pt-1">
+            <View className="w-7 h-7 rounded-full bg-white border border-gray-200 items-center justify-center">
+              <Text className="text-[11px]">🤖</Text>
+            </View>
+          </View>
+        ) : (
+          <View className="w-10" />
+        )}
 
-    if (!audioUri) return;
-
-    setIsLoading(true);
-
-    try {
-      // Transcribe the audio
-      const transcript = await transcribeAudio(audioUri);
-
-      if (transcript) {
-        // Send the transcribed text as a message
-        await handleSendMessage(transcript);
-      }
-    } catch (error) {
-      console.error("Transcription error:", error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: "Sorry, I couldn't understand the audio. Please try again.",
-          timestamp: new Date(),
-        },
-      ]);
-      setIsLoading(false);
-    }
+        <View
+          className={[
+            "max-w-[78%] rounded-2xl bg-white border border-gray-200 px-4 py-3",
+            isAssistant ? "" : "ml-auto",
+          ].join(" ")}
+          style={{
+            shadowOpacity: 0.08,
+            shadowRadius: 10,
+            shadowOffset: { width: 0, height: 6 },
+            elevation: 2,
+          }}
+        >
+          {item.content === "__TYPING__" ? (
+            <TypingDots />
+          ) : (
+            <Text className="text-[16px] text-gray-800 leading-[22px]">
+              {item.content}
+            </Text>
+          )}
+        </View>
+      </View>
+    );
   };
 
   return (
     <SafeAreaView className="flex-1 bg-white">
       <KeyboardAvoidingView
+        style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        className="flex-1"
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
-        {/* Header */}
-        <View className="px-4 py-3 border-b border-gray-200">
-          <Text className="text-xl font-bold text-center">
-            AI Learning Tutor
-          </Text>
-          <Text className="text-gray-500 text-center text-sm">
-            Ask me anything!
-          </Text>
-        </View>
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View className="flex-1 bg-white">
+            {/* Header */}
+            <View className="pt-8 border-b border-gray-100">
+              <View className="px-6 pb-4 flex-row items-center">
+                <TouchableOpacity className="mr-3">
+                  <Ionicons name="chevron-back" size={24} color="#111827" />
+                </TouchableOpacity>
 
-        {/* Messages */}
-        <ScrollView
-          ref={scrollViewRef}
-          className="flex-1 px-4 py-2"
-          contentContainerStyle={{ paddingBottom: 20 }}
-        >
-          {messages.length === 0 && (
-            <View className="items-center justify-center py-20">
-              <Text className="text-6xl mb-4">👋</Text>
-              <Text className="text-gray-500 text-center text-lg">
-                Hello! I'm your AI tutor.
-              </Text>
-              <Text className="text-gray-400 text-center mt-2">
-                Type a message or hold the mic to speak
-              </Text>
+                <View className="w-9 h-9 rounded-full bg-white border border-gray-200 items-center justify-center mr-3">
+                  <Text>🤖</Text>
+                </View>
+
+                <View>
+                  <Text className="text-[20px] font-semibold text-gray-900">
+                    DigiBuddy
+                  </Text>
+                  <Text className="text-[13px] text-gray-500 mt-0.5">
+                    Your AI Learning Assistant
+                  </Text>
+                </View>
+              </View>
             </View>
-          )}
 
-          {messages.map((message) => (
-            <ChatBubble key={message.id} message={message} />
-          ))}
-
-          {isLoading && (
-            <View className="self-start bg-gray-200 rounded-2xl px-4 py-3 mb-3">
-              <ActivityIndicator size="small" color="#6B7280" />
-            </View>
-          )}
-        </ScrollView>
-
-        {/* Input Area */}
-        <View className="px-4 py-3 border-t border-gray-200 gap-3">
-          <ChatInput
-            onSend={handleSendMessage}
-            isDisabled={isLoading || isRecording}
-          />
-
-          <View className="items-center py-2">
-            <VoiceButton
-              isRecording={isRecording}
-              isDisabled={isLoading}
-              onPressIn={handleVoiceStart}
-              onPressOut={handleVoiceEnd}
+            {/* Messages */}
+            <FlatList
+              ref={listRef}
+              data={displayMessages}
+              keyExtractor={(m) => m.id}
+              renderItem={({ item }) => <Bubble item={item} />}
+              contentContainerStyle={{ paddingTop: 26, paddingBottom: 14 }}
+              onContentSizeChange={scrollToBottom}
             />
+
+            {/* Bottom area (input + fake tab bar) */}
+            <View className="bg-white border-t border-gray-100">
+              <View className="px-5 pt-3 pb-4">
+                <View className="flex-row items-center">
+                  <View className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3">
+                    <TextInput
+                      value={input}
+                      onChangeText={setInput}
+                      placeholder="Type your question here..."
+                      placeholderTextColor="#9CA3AF"
+                      className="text-[15px] text-gray-900"
+                      multiline
+                      textAlignVertical="top"
+                      onFocus={scrollToBottom}
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={send}
+                    disabled={isTyping}
+                    className={[
+                      "ml-3 w-14 h-14 rounded-2xl items-center justify-center",
+                      isTyping ? "bg-green-300" : "bg-green-600",
+                    ].join(" ")}
+                  >
+                    <Ionicons name="paper-plane" size={20} color="white" />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity className="ml-3 w-14 h-14 rounded-2xl bg-white border border-gray-200 items-center justify-center">
+                    <Ionicons name="mic" size={20} color="#111827" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Faux tab bar */}
+              <View className="border-t border-gray-100 px-6 pt-3 pb-6">
+                <View className="flex-row justify-between">
+                  <View className="items-center">
+                    <Ionicons name="home-outline" size={22} color="#6B7280" />
+                    <Text className="text-[12px] text-gray-500 mt-1">Home</Text>
+                  </View>
+
+                  <View className="items-center">
+                    <Ionicons name="chatbubble" size={22} color="#4CAF7A" />
+                    <Text className="text-[12px] text-[#4CAF7A] mt-1">
+                      AI Chat
+                    </Text>
+                  </View>
+
+                  <View className="items-center">
+                    <Ionicons name="book-outline" size={22} color="#6B7280" />
+                    <Text className="text-[12px] text-gray-500 mt-1">
+                      Learn
+                    </Text>
+                  </View>
+
+                  <View className="items-center">
+                    <Ionicons name="person-outline" size={22} color="#6B7280" />
+                    <Text className="text-[12px] text-gray-500 mt-1">
+                      Profile
+                    </Text>
+                  </View>
+
+                  <View className="items-center">
+                    <Ionicons
+                      name="settings-outline"
+                      size={22}
+                      color="#6B7280"
+                    />
+                    <Text className="text-[12px] text-gray-500 mt-1">
+                      Settings
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </View>
           </View>
-        </View>
+        </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
